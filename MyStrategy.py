@@ -4,10 +4,11 @@ from model.Move import Move
 from model.Wizard import Wizard
 from model.World import World
 from model.Faction import Faction
+import model
 from enum import Enum
 from math import hypot
+from math import pi
 import random
-
 
 class Point2D:
     def __init__(self, x, y):
@@ -20,6 +21,9 @@ class Point2D:
     def distance_to(self, point):
         return hypot(point.x - self.x, point.y - self.y)
 
+    def __str__(self):
+        return "x: {0}, y: {1}".format(self.x, self.y)
+
 
 class LaneType(Enum):
     TOP = 1
@@ -31,6 +35,17 @@ class MyStrategy:
     WAYPOINT_RADIUS = 100.0
     LOW_HP_FACTOR = 0.25
 
+    WIZARD_PRIORITY = 3
+    MINION_PRIORITY = 1
+    BULDING_PRIORITY = 2
+
+    MAX_PRIORITY = 100
+
+    CLOSE_ENEMY_PRIORITY = 5
+    HEALTH_PRIORITY_DEFAULT = 1
+    HEALTH_PRIORITY_BELOW_50 = 2
+    HEALTH_PRIORITY_BELOW_25 = 3
+
     def __init__(self):
         self._firsttime = True
         self._waypoints_by_lane = {}
@@ -40,35 +55,50 @@ class MyStrategy:
         self._world = None
         self._game = None
         self._move = None
+        self._enemy_locked_tick = 0
+        self._last_enemy = None
+        self._is_moving = False
+        self._prev_location = None
+        self._prev_location_tick = 0
+        self._current_strafe = 0
+        self._is_escaping_stuck = False
+        self._is_attacking = False
+        self._is_falling_back = False
 
     def move(self, me: Wizard, world: World, game: Game, move: Move):
         self._initialize_tick(me, world, game, move)
         self._initialize_strategy()
 
-        if random.random() > 0.5:
-            move.strafe_speed = game.wizard_strafe_speed
+        self._is_attacking = False
+        if self._last_enemy\
+                and (self._world.tick_index - self._enemy_locked_tick) < 50:
+            self._update_last_enemy()
         else:
-            move.strafe_speed = -game.wizard_strafe_speed
+            self._is_falling_back = False
+            unit_prior = self._get_priority_target()
+            self._enemy_locked_tick = self._world.tick_index
+            self._last_enemy = unit_prior
 
-        if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
-            self._go_to(self._previous_waypoint())
-            return
-
-        nearest_target, dist = self._get_nearest_target()
-
-        if nearest_target and dist <= self._me.cast_range:
-            angle = self._me.get_angle_to_unit(nearest_target)
+        if self._last_enemy:
+            self._is_attacking = True
+            angle = self._me.get_angle_to_unit(self._last_enemy[0])
             self._move.turn = angle
 
             if abs(angle) < self._game.staff_sector / 2.0:
                 self._move.action = ActionType.MAGIC_MISSILE
                 self._move.cast_angle = angle
-                self._move.min_cast_distance =\
-                    dist - nearest_target.radius\
+                self._move.min_cast_distance = \
+                    self._last_enemy[1] - self._last_enemy[0].radius \
                     + self._game.magic_missile_radius
-            return
 
-        self._go_to(self._next_waypoint())
+        self._detect_stuck()
+
+        if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR or self._is_falling_back:
+            self._go_to_no_turn(self._previous_waypoint(), back=True)
+        else:
+            self._go_to_no_turn(self._next_waypoint(), back=False)
+
+        self._move.strafe_speed = self._current_strafe
 
     def _initialize_strategy(self):
         if not self._firsttime:
@@ -76,6 +106,9 @@ class MyStrategy:
 
         random.seed(self._game.random_seed)
         map_size = self._game.map_size
+
+        self._prev_location = Point2D(self._me.x, self._me.y)
+        self._prev_location_tick = self._world.tick_index
 
         points = []
         points.append(Point2D(100.0, map_size - 100.0))
@@ -115,13 +148,7 @@ class MyStrategy:
         points.append(Point2D(map_size - 200.0, 200.0))
         self._waypoints_by_lane[LaneType.BOTTOM] = points
 
-        if self._me.owner_player_id in [1, 2, 6, 7]:
-            self._lane = LaneType.TOP
-        elif self._me.owner_player_id in [3, 8]:
-            self._lane = LaneType.MIDDLE
-        elif self._me.owner_player_id in [4, 5, 9, 10]:
-            self._lane = LaneType.BOTTOM
-
+        self._lane = random.choice(list(LaneType))
         self._waypoints = self._waypoints_by_lane[self._lane]
         self._firsttime = False
 
@@ -132,8 +159,51 @@ class MyStrategy:
         self._game = game
         self._move = move
 
+    def _calculate_escape_point(self):
+       #print("sssssss")
+        obstacles = list()
+        obstacles.extend(self._world.wizards)
+        obstacles.extend(self._world.minions)
+        obstacles.extend(self._world.buildings)
+        obstacles.extend(self._world.trees)
+        for unit in obstacles:
+            dist = self._me.get_distance_to_unit(unit)
+            if dist < self._me.radius + unit.radius * 1.1:
+                angle = self._me.get_angle_to_unit(unit)
+                break
+        if angle <= 0.0:
+            angle += pi
+        else:
+            angle -= pi
+        self._move.speed, self._current_strafe = self._calc_move_to_angle(angle)
+        #print(angle, self._move.speed, self._current_strafe)
+
+    def _detect_stuck(self):
+        if not self._is_moving:
+            return
+
+        if (self._world.tick_index - self._prev_location_tick) < 20:
+            return
+
+        cur_location = Point2D(self._me.x, self._me.y)
+
+        if cur_location.distance_to(self._prev_location) < 30:
+            self._is_escaping_stuck = True
+            #self._calculate_escape_point()
+            if random.random() > 0.5:
+                self._current_strafe = self._game.wizard_strafe_speed
+            else:
+                self._current_strafe = -self._game.wizard_strafe_speed
+        else:
+            self._is_escaping_stuck = False
+            self._current_strafe = 0
+
+        self._prev_location = cur_location
+        self._prev_location_tick = self._world.tick_index
+
     def _next_waypoint(self):
         last_wp = self._waypoints[-1]
+       #print(self._waypoints)
 
         for i in range(len(self._waypoints) - 1):
             wp = self._waypoints[i]
@@ -162,29 +232,118 @@ class MyStrategy:
                 return wp
         return first_wp
 
-    def _get_nearest_target(self):
-        targets = []
-        targets.extend(self._world.buildings)
-        targets.extend(self._world.wizards)
-        targets.extend(self._world.minions)
+    def _update_last_enemy(self):
+        if type(self._last_enemy[0]) is model.Building:
+            return
 
-        nearest_target_distance = 10000.0
-        nearest_target = None
+        if type(self._last_enemy[0]) is model.Minion:
+            units = self._world.minions
+        else:
+            units = self._world.wizards
 
-        for target in targets:
-            if target.faction == Faction.NEUTRAL\
-                    or target.faction == self._me.faction:
+        for unit in units:
+            if unit.id == self._last_enemy[0].id:
+                dist = self._me.get_distance_to_unit(unit)
+                self._last_enemy = (unit, dist, self._last_enemy[2])
+                return
+
+    def _arrange_by_priority(self, units):
+        if len(units) == 0:
+            return list()
+
+        unit_priority = MyStrategy.WIZARD_PRIORITY
+        if type(units[0]) is model.Building:
+            unit_priority = MyStrategy.BULDING_PRIORITY
+        elif type(units[0]) is model.Minion:
+            unit_priority = MyStrategy.MINION_PRIORITY
+
+        prior_units = list()
+        for unit in units:
+            if unit.faction == Faction.NEUTRAL\
+                    or unit.faction == self._me.faction:
                 continue
 
-            dist = self._me.get_distance_to_unit(target)
-            if dist < nearest_target_distance:
-                nearest_target_distance = dist
-                nearest_target = target
-        return nearest_target, nearest_target_distance
+            dist = self._me.get_distance_to_unit(unit)
+            if dist > self._me.cast_range:
+                continue
 
-    def _go_to(self, point: Point2D):
+            if dist < self._me.radius * 9:
+                #print("fall back!")
+                self._is_falling_back = True
+
+            priority = unit_priority * MyStrategy.HEALTH_PRIORITY_DEFAULT
+            life_factor = float(unit.life) / unit.max_life
+            if life_factor < 0.5:
+                priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_50
+            if life_factor < 0.25:
+                priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_25
+            prior_units.append((unit, dist, priority))
+
+            if dist < self._game.wizard_radius + unit.radius * 3:
+                priority *= dist * (1 - life_factor)
+
+        sorted(prior_units, key=lambda x: x[2])
+        return prior_units
+
+    def _get_priority_target(self):
+        prior_buildings = self._arrange_by_priority(self._world.buildings)
+        prior_wizards = self._arrange_by_priority(self._world.wizards)
+        prior_minions = self._arrange_by_priority(self._world.minions)
+
+        max_prior = list()
+        unit_prior = None
+        if prior_buildings:
+            max_prior.append(prior_buildings[0])
+        if prior_wizards:
+            max_prior.append(prior_wizards[0])
+        if prior_minions:
+            max_prior.append(prior_minions[0])
+
+        if max_prior:
+            unit_prior = max(max_prior, key=lambda x: x[2])
+        return unit_prior
+
+    # def _go_to(self, point: Point2D):
+    #     self._is_moving = True
+    #     angle = self._me.get_angle_to(point.x, point.y)
+    #     self._move.turn = angle
+    #
+    #     if abs(angle) < self._game.staff_sector / 4.0:
+    #         self._move.speed = self._game.wizard_forward_speed
+
+    def _calc_move_to_angle(self, angle):
+        if 0.0 >= angle > (-pi / 2):
+            move = self._game.wizard_forward_speed
+            strafe = -self._game.wizard_strafe_speed
+        elif (-pi / 2) >= angle > -pi:
+            move = -self._game.wizard_forward_speed
+            strafe = -self._game.wizard_strafe_speed
+        elif pi >= angle > pi / 2:
+            move = -self._game.wizard_forward_speed
+            strafe = self._game.wizard_strafe_speed
+        else:
+            move = self._game.wizard_forward_speed
+            strafe = self._game.wizard_strafe_speed
+        return move, strafe
+
+    def _go_to_no_turn(self, point: Point2D, back: bool):
+        if not back and self._is_attacking:
+            self._current_strafe = 0
+            #if self._is_moving:
+            #    print("Moving stopped")
+            self._is_moving = False
+            return
+
+        #if not self._is_moving:
+        #    print("Moving started")
+        self._is_moving = True
         angle = self._me.get_angle_to(point.x, point.y)
-        self._move.turn = angle
+        speed, strafe = self._calc_move_to_angle(angle)
 
-        if abs(angle) < self._game.staff_sector / 4.0:
-            self._move.speed = self._game.wizard_forward_speed
+        # print("p", point.x, point.y, back)
+        # print("1", self._move.strafe_speed, strafe)
+
+        if not self._is_escaping_stuck:
+            self._current_strafe = strafe
+            self._move.speed = speed
+
