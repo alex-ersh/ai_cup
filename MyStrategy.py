@@ -61,6 +61,7 @@ class MyStrategy:
         self._prev_location = None
         self._prev_location_tick = 0
         self._current_strafe = 0
+        self._current_speed = 0
         self._is_escaping_stuck = False
         self._is_attacking = False
         self._is_falling_back = False
@@ -98,6 +99,7 @@ class MyStrategy:
         else:
             self._go_to_no_turn(self._next_waypoint(), back=False)
 
+        self._move.speed = self._current_speed
         self._move.strafe_speed = self._current_strafe
 
     def _initialize_strategy(self):
@@ -160,44 +162,79 @@ class MyStrategy:
         self._move = move
 
     def _calculate_escape_point(self):
-       #print("sssssss")
+        units = list()
+        units.extend(self._world.wizards)
+        units.extend(self._world.minions)
+        units.extend(self._world.buildings)
+        units.extend(self._world.trees)
         obstacles = list()
-        obstacles.extend(self._world.wizards)
-        obstacles.extend(self._world.minions)
-        obstacles.extend(self._world.buildings)
-        obstacles.extend(self._world.trees)
-        for unit in obstacles:
+        for unit in units:
+            if unit.id == self._me.id:
+                continue
+
             dist = self._me.get_distance_to_unit(unit)
-            if dist < self._me.radius + unit.radius * 1.1:
-                angle = self._me.get_angle_to_unit(unit)
-                break
-        if angle <= 0.0:
-            angle += pi
+            if dist < self._me.radius + unit.radius * 1.4:
+                #print("dist", dist)
+                obstacles.append((self._me.get_angle_to_unit(unit), unit))
+
+        obstacles = sorted(obstacles, key=lambda x: x[0])
+        obs_num = len(obstacles)
+        move_angle = 0.0
+
+        if obs_num == 0:
+            return
+
+        if obs_num == 1:
+            if obstacles[0][0] <= 0.0:
+                move_angle = obstacles[0][0] + pi
+            else:
+                move_angle = obstacles[0][0] - pi
+            self._current_speed, self._current_strafe = self._calc_move_to_angle(move_angle)
         else:
-            angle -= pi
-        self._move.speed, self._current_strafe = self._calc_move_to_angle(angle)
-        #print(angle, self._move.speed, self._current_strafe)
+            # Прибавление в конец первого элемента, чтобы
+            # можно было сравнить их все друг с другом по кругу.
+            # При этом изменяется значение угла, вычисляется угол
+            # до первого элемента в противоположном направлении.
+            if obstacles[0][0] >= 0.0:
+                fin_angle = obstacles[0][0] - 2 * pi
+            else:
+                fin_angle = obstacles[0][0] + 2 * pi
+            obstacles.append((fin_angle, obstacles[0][1]))
+            for i in range(obs_num):
+                angle = abs(obstacles[i][0] - obstacles[i + 1][0])
+                #print("angle cur and next!", obstacles[i][0], obstacles[i + 1][0])
+                if angle > pi:
+                    move_angle = (obstacles[i][0] + obstacles[i + 1][0]) / 2.0
+                    #print("move angle!", move_angle)
+                    if abs(move_angle) > pi:
+                        if move_angle > 0.0:
+                            move_angle -= 2 * pi
+                        else:
+                            move_angle += 2 * pi
+                    #print("move angle total!", move_angle)
+                    self._current_speed, self._current_strafe = self._calc_move_to_angle(move_angle)
+                    break
 
     def _detect_stuck(self):
+        cur_location = Point2D(self._me.x, self._me.y)
+
         if not self._is_moving:
             return
 
         if (self._world.tick_index - self._prev_location_tick) < 20:
             return
 
-        cur_location = Point2D(self._me.x, self._me.y)
-
         if cur_location.distance_to(self._prev_location) < 30:
+            #print("Escaping!!!")
             self._is_escaping_stuck = True
-            #self._calculate_escape_point()
-            if random.random() > 0.5:
-                self._current_strafe = self._game.wizard_strafe_speed
-            else:
-                self._current_strafe = -self._game.wizard_strafe_speed
-        else:
-            self._is_escaping_stuck = False
-            self._current_strafe = 0
+            self._calculate_escape_point()
+            self._prev_location_tick = self._world.tick_index
+            return
 
+        #print("Stop escaping!!!")
+        self._is_escaping_stuck = False
+        self._current_strafe = 0
+        self._current_speed = 0
         self._prev_location = cur_location
         self._prev_location_tick = self._world.tick_index
 
@@ -281,9 +318,7 @@ class MyStrategy:
 
             if dist < self._game.wizard_radius + unit.radius * 3:
                 priority *= dist * (1 - life_factor)
-
-        sorted(prior_units, key=lambda x: x[2])
-        return prior_units
+        return sorted(prior_units, key=lambda x: x[2], reverse=True)
 
     def _get_priority_target(self):
         prior_buildings = self._arrange_by_priority(self._world.buildings)
@@ -327,8 +362,9 @@ class MyStrategy:
         return move, strafe
 
     def _go_to_no_turn(self, point: Point2D, back: bool):
-        if not back and self._is_attacking:
+        if not back and self._is_attacking and not self._is_escaping_stuck:
             self._current_strafe = 0
+            self._current_speed = 0
             #if self._is_moving:
             #    print("Moving stopped")
             self._is_moving = False
@@ -336,14 +372,15 @@ class MyStrategy:
 
         #if not self._is_moving:
         #    print("Moving started")
-        self._is_moving = True
         angle = self._me.get_angle_to(point.x, point.y)
         speed, strafe = self._calc_move_to_angle(angle)
 
-        # print("p", point.x, point.y, back)
-        # print("1", self._move.strafe_speed, strafe)
-
         if not self._is_escaping_stuck:
+            if not self._is_moving:
+                self._prev_location = Point2D(self._me.x, self._me.y)
+                self._prev_location_tick = self._world.tick_index
             self._current_strafe = strafe
-            self._move.speed = speed
+            self._current_speed = speed
+
+        self._is_moving = True
 
