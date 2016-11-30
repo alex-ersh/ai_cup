@@ -5,6 +5,7 @@ from model.Wizard import Wizard
 from model.World import World
 from model.Faction import Faction
 import model
+from model.SkillType import SkillType
 from enum import Enum
 from math import hypot
 from math import pi
@@ -33,7 +34,7 @@ class LaneType(Enum):
 
 class MyStrategy:
     WAYPOINT_RADIUS = 100.0
-    LOW_HP_FACTOR = 0.25
+    LOW_HP_FACTOR = 0.35
 
     WIZARD_PRIORITY = 3
     MINION_PRIORITY = 1
@@ -65,6 +66,26 @@ class MyStrategy:
         self._is_escaping_stuck = False
         self._is_attacking = False
         self._is_falling_back = False
+        self._has_frostbolt = False
+        self._last_frostbolt_tick = 0
+        self._build_sequence = [
+            SkillType.MAGICAL_DAMAGE_BONUS_PASSIVE_1,
+            SkillType.MAGICAL_DAMAGE_BONUS_AURA_1,
+            SkillType.MAGICAL_DAMAGE_BONUS_PASSIVE_2,
+            SkillType.MAGICAL_DAMAGE_BONUS_AURA_2,
+            SkillType.FROST_BOLT,
+            SkillType.RANGE_BONUS_PASSIVE_1,
+            SkillType.RANGE_BONUS_AURA_1,
+            SkillType.RANGE_BONUS_PASSIVE_2,
+            SkillType.RANGE_BONUS_AURA_2,
+            SkillType.ADVANCED_MAGIC_MISSILE,
+            SkillType.MAGICAL_DAMAGE_ABSORPTION_PASSIVE_1,
+            SkillType.MAGICAL_DAMAGE_ABSORPTION_AURA_1,
+            SkillType.MAGICAL_DAMAGE_ABSORPTION_PASSIVE_2,
+            SkillType.MAGICAL_DAMAGE_ABSORPTION_AURA_2,
+            SkillType.SHIELD
+            ]
+        self._current_level = 0
 
     def move(self, me: Wizard, world: World, game: Game, move: Move):
         self._initialize_tick(me, world, game, move)
@@ -86,7 +107,13 @@ class MyStrategy:
             self._move.turn = angle
 
             if abs(angle) < self._game.staff_sector / 2.0:
-                self._move.action = ActionType.MAGIC_MISSILE
+                if self._has_frostbolt\
+                        and (self._world.tick_index - self._last_frostbolt_tick)\
+                        > self._game.frost_bolt_cooldown_ticks:
+                    self._move.action = ActionType.FROST_BOLT
+                    self._last_frostbolt_tick = self._world.tick_index
+                else:
+                    self._move.action = ActionType.MAGIC_MISSILE
                 self._move.cast_angle = angle
                 self._move.min_cast_distance = \
                     self._last_enemy[1] - self._last_enemy[0].radius \
@@ -94,13 +121,23 @@ class MyStrategy:
 
         self._detect_stuck()
 
-        if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR or self._is_falling_back:
+        if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR\
+                or self._is_falling_back:
             self._go_to_no_turn(self._previous_waypoint(), back=True)
         else:
             self._go_to_no_turn(self._next_waypoint(), back=False)
 
         self._move.speed = self._current_speed
         self._move.strafe_speed = self._current_strafe
+        self._level_up()
+
+    def _level_up(self):
+        if self._me.level > self._current_level\
+                and self._me.level <= len(self._build_sequence):
+            self._move.skill_to_learn = self._build_sequence[self._current_level]
+            if self._move.skill_to_learn == SkillType.FROST_BOLT:
+                self._has_frostbolt = True
+            self._current_level += 1
 
     def _initialize_strategy(self):
         if not self._firsttime:
@@ -151,6 +188,7 @@ class MyStrategy:
         self._waypoints_by_lane[LaneType.BOTTOM] = points
 
         self._lane = random.choice(list(LaneType))
+        #self._lane = LaneType.MIDDLE
         self._waypoints = self._waypoints_by_lane[self._lane]
         self._firsttime = False
 
@@ -185,10 +223,14 @@ class MyStrategy:
             return
 
         if obs_num == 1:
-            if obstacles[0][0] <= 0.0:
-                move_angle = obstacles[0][0] + pi
-            else:
-                move_angle = obstacles[0][0] - pi
+            side = random.choice([-pi / 2, pi / 2])
+            move_angle = obstacles[0][0] + side
+            if abs(move_angle) > pi:
+                if move_angle <= 0.0:
+                    move_angle = 2 * pi + move_angle
+                else:
+                    move_angle = move_angle - 2 * pi
+            #print("move", move_angle)
             self._current_speed, self._current_strafe = self._calc_move_to_angle(move_angle)
         else:
             # Прибавление в конец первого элемента, чтобы
@@ -223,6 +265,9 @@ class MyStrategy:
 
         if (self._world.tick_index - self._prev_location_tick) < 20:
             return
+
+        # print("level", self._me.level)
+        # print("xp", self._me.xp)
 
         if cur_location.distance_to(self._prev_location) < 30:
             #print("Escaping!!!")
