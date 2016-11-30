@@ -6,6 +6,10 @@ from model.World import World
 from model.Faction import Faction
 import model
 from model.SkillType import SkillType
+from model.Tree import Tree
+from model.MinionType import MinionType
+from model.Building import Building
+from model.Minion import Minion
 from enum import Enum
 from math import hypot
 from math import pi
@@ -68,6 +72,9 @@ class MyStrategy:
         self._is_falling_back = False
         self._has_frostbolt = False
         self._last_frostbolt_tick = 0
+        self._is_attacking_tree = False
+        self._is_low_hp = False
+        self._nearest_range_enemy = None # tuple (unit, dist, priority)
         self._build_sequence = [
             SkillType.MAGICAL_DAMAGE_BONUS_PASSIVE_1,
             SkillType.MAGICAL_DAMAGE_BONUS_AURA_1,
@@ -87,9 +94,22 @@ class MyStrategy:
             ]
         self._current_level = 0
 
+    def _get_range_unit_attack_dist(self, unit):
+        if type(unit) is Building:
+            return unit.attack_range
+        elif type(unit) is Wizard:
+            return unit.cast_range
+        elif type(unit) is Minion\
+                and unit.type == MinionType.FETISH_BLOWDART:
+            return self._game.fetish_blowdart_attack_range
+        else:
+            return 0.0
+
     def move(self, me: Wizard, world: World, game: Game, move: Move):
         self._initialize_tick(me, world, game, move)
         self._initialize_strategy()
+
+        self._detect_stuck()
 
         self._is_attacking = False
         if self._last_enemy\
@@ -119,10 +139,16 @@ class MyStrategy:
                     self._last_enemy[1] - self._last_enemy[0].radius \
                     + self._game.magic_missile_radius
 
-        self._detect_stuck()
+        if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
+            if self._nearest_range_enemy:
+                #print("nearest", self._nearest_range_enemy[1], self._get_range_unit_attack_dist(self._nearest_range_enemy[0]))
+                if self._nearest_range_enemy[1]\
+                        <= self._get_range_unit_attack_dist(self._nearest_range_enemy[0]):
+                    self._is_low_hp = True
+        else:
+            self._is_low_hp = False
 
-        if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR\
-                or self._is_falling_back:
+        if self._is_low_hp or self._is_falling_back:
             self._go_to_no_turn(self._previous_waypoint(), back=True)
         else:
             self._go_to_no_turn(self._next_waypoint(), back=False)
@@ -156,6 +182,7 @@ class MyStrategy:
         else:
             points.append(Point2D(600.0, map_size - 200.0))
         points.append(Point2D(800.0, map_size - 800.0))
+        #points.append(Point2D(2000.0, map_size - 2000.0))
         points.append(Point2D(map_size - 600.0, 600.0))
         self._waypoints_by_lane[LaneType.MIDDLE] = points
 
@@ -199,6 +226,24 @@ class MyStrategy:
         self._game = game
         self._move = move
 
+    def _destroy_tree(self, obstacles):
+        for obs in obstacles:
+            #print("searching tree...")
+            #print(type(obs[1]), type(Tree))
+            if type(obs[1]) is Tree:
+                #print("destroy tree!!!")
+                self._move.turn = obs[0]
+                self._is_attacking_tree = True
+                if abs(obs[0]) < self._game.staff_sector / 2.0:
+                    if obs[2] <= self._game.staff_range:
+                        self._move.action = ActionType.STAFF
+                    else:
+                        self._move.action = ActionType.MAGIC_MISSILE
+                    self._move.cast_angle = obs[0]
+                    self._move.min_cast_distance = obs[2] - obs[1].radius
+                    return
+        self._is_attacking_tree = False
+
     def _calculate_escape_point(self):
         units = list()
         units.extend(self._world.wizards)
@@ -213,13 +258,17 @@ class MyStrategy:
             dist = self._me.get_distance_to_unit(unit)
             if dist < self._me.radius + unit.radius * 1.4:
                 #print("dist", dist)
-                obstacles.append((self._me.get_angle_to_unit(unit), unit))
+                obstacles.append((self._me.get_angle_to_unit(unit), unit, dist))
 
         obstacles = sorted(obstacles, key=lambda x: x[0])
         obs_num = len(obstacles)
         move_angle = 0.0
 
         if obs_num == 0:
+            return
+
+        self._destroy_tree(obstacles)
+        if self._is_attacking_tree:
             return
 
         if obs_num == 1:
@@ -271,12 +320,16 @@ class MyStrategy:
 
         if cur_location.distance_to(self._prev_location) < 30:
             #print("Escaping!!!")
+            #if not self._is_escaping_stuck:
+                #print("Escaping!")
             self._is_escaping_stuck = True
             self._calculate_escape_point()
             self._prev_location_tick = self._world.tick_index
             return
 
         #print("Stop escaping!!!")
+        #if self._is_escaping_stuck:
+            #print("Stop Escaping!")
         self._is_escaping_stuck = False
         self._current_strafe = 0
         self._current_speed = 0
@@ -315,10 +368,10 @@ class MyStrategy:
         return first_wp
 
     def _update_last_enemy(self):
-        if type(self._last_enemy[0]) is model.Building:
+        if type(self._last_enemy[0]) is Building:
             return
 
-        if type(self._last_enemy[0]) is model.Minion:
+        if type(self._last_enemy[0]) is Minion:
             units = self._world.minions
         else:
             units = self._world.wizards
@@ -334,9 +387,9 @@ class MyStrategy:
             return list()
 
         unit_priority = MyStrategy.WIZARD_PRIORITY
-        if type(units[0]) is model.Building:
+        if type(units[0]) is Building:
             unit_priority = MyStrategy.BULDING_PRIORITY
-        elif type(units[0]) is model.Minion:
+        elif type(units[0]) is Minion:
             unit_priority = MyStrategy.MINION_PRIORITY
 
         prior_units = list()
@@ -346,10 +399,14 @@ class MyStrategy:
                 continue
 
             dist = self._me.get_distance_to_unit(unit)
+
+            if dist < self._nearest_range_enemy[1]:
+                self._nearest_range_enemy = (unit, dist, 0)
+
             if dist > self._me.cast_range:
                 continue
 
-            if dist < self._me.radius * 9:
+            if dist < self._me.cast_range * 0.8:
                 #print("fall back!")
                 self._is_falling_back = True
 
@@ -366,6 +423,7 @@ class MyStrategy:
         return sorted(prior_units, key=lambda x: x[2], reverse=True)
 
     def _get_priority_target(self):
+        self._nearest_range_enemy = (None, self._game.map_size, 0)
         prior_buildings = self._arrange_by_priority(self._world.buildings)
         prior_wizards = self._arrange_by_priority(self._world.wizards)
         prior_minions = self._arrange_by_priority(self._world.minions)
