@@ -37,23 +37,26 @@ class LaneType(Enum):
 
 
 class MyStrategy:
-    WAYPOINT_RADIUS = 100.0
+    WAYPOINT_RADIUS = 80.0
     LOW_HP_FACTOR = 0.35
 
     WIZARD_PRIORITY = 3
     MINION_PRIORITY = 1
     BULDING_PRIORITY = 2
-
-    MAX_PRIORITY = 100
-
     CLOSE_ENEMY_PRIORITY = 5
     HEALTH_PRIORITY_DEFAULT = 1
     HEALTH_PRIORITY_BELOW_50 = 2
     HEALTH_PRIORITY_BELOW_25 = 3
 
+    LEFT_BONUS_POINT = Point2D(1200, 1200)
+    RIGHT_BONUS_POINT = Point2D(2800, 2800)
+    BONUS_TICK_PERIOD = 2500
+
     def __init__(self):
         self._firsttime = True
         self._waypoints_by_lane = {}
+        self._bonuses_by_lane = {}
+        self._bonuses_decision_points = {}
         self._waypoints = []
         self._lane = None
         self._me = None
@@ -75,6 +78,7 @@ class MyStrategy:
         self._is_attacking_tree = False
         self._is_low_hp = False
         self._nearest_range_enemy = None # tuple (unit, dist, priority)
+        self._next_wt = 0
         self._build_sequence = [
             SkillType.MAGICAL_DAMAGE_BONUS_PASSIVE_1,
             SkillType.MAGICAL_DAMAGE_BONUS_AURA_1,
@@ -93,6 +97,12 @@ class MyStrategy:
             SkillType.SHIELD
             ]
         self._current_level = 0
+        self._possible_bonuses = []
+        self._current_bonus_point = None
+        self._bonus_decision_point = None
+        self._is_taking_bonus = False
+        self._is_waiting_for_bonus = False
+        self._next_bonus_tick = 0
 
     def _get_range_unit_attack_dist(self, unit):
         if type(unit) is Building:
@@ -104,6 +114,31 @@ class MyStrategy:
             return self._game.fetish_blowdart_attack_range
         else:
             return 0.0
+
+    def _take_bonus(self):
+        if self._is_taking_bonus:
+            dist = self._me.get_distance_to(self._current_bonus_point.x,
+                                            self._current_bonus_point.y)
+
+            if dist < 50.0 and self._world.tick_index < self._next_bonus_tick:
+                 self._is_waiting_for_bonus = True
+
+            self._is_waiting_for_bonus = False
+            if dist < self._me.radius:
+                if self._is_taking_bonus:
+                    print("stop taking bonus!", dist)
+                self._is_taking_bonus = False
+
+        self._current_bonus_point = random.choice(self._possible_bonuses)
+        dist = self._me.get_distance_to(self._bonus_decision_point.x,
+                                        self._bonus_decision_point.y)
+        to_bonus = self._world.tick_index % MyStrategy.BONUS_TICK_PERIOD
+        is_it_time = to_bonus > 2000
+        if dist < 400.0 and is_it_time:
+            self._next_bonus_tick = (self._world.tick_index / int(MyStrategy.BONUS_TICK_PERIOD) + 1) * MyStrategy.BONUS_TICK_PERIOD
+            if not self._is_taking_bonus:
+                print("taking bonus!", dist, self._world.tick_index, self._next_bonus_tick)
+            self._is_taking_bonus = True
 
     def move(self, me: Wizard, world: World, game: Game, move: Move):
         self._initialize_tick(me, world, game, move)
@@ -140,16 +175,20 @@ class MyStrategy:
                     + self._game.magic_missile_radius
 
         if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
+            self._is_low_hp = False
             if self._nearest_range_enemy:
                 #print("nearest", self._nearest_range_enemy[1], self._get_range_unit_attack_dist(self._nearest_range_enemy[0]))
                 if self._nearest_range_enemy[1]\
                         <= self._get_range_unit_attack_dist(self._nearest_range_enemy[0]):
                     self._is_low_hp = True
-        else:
-            self._is_low_hp = False
+
+        #self._take_bonus()
 
         if self._is_low_hp or self._is_falling_back:
             self._go_to_no_turn(self._previous_waypoint(), back=True)
+        #elif self._is_taking_bonus:
+        #    if not self._is_waiting_for_bonus:
+        #        self._go_to_no_turn(self._current_bonus_point, back=True)
         else:
             self._go_to_no_turn(self._next_waypoint(), back=False)
 
@@ -176,47 +215,78 @@ class MyStrategy:
         self._prev_location_tick = self._world.tick_index
 
         points = []
-        points.append(Point2D(100.0, map_size - 100.0))
         if random.random() > 0.5:
-            points.append(Point2D(200.0, map_size - 600.0))
+            points.append(Point2D(150.0, map_size - 300.0))
         else:
-            points.append(Point2D(600.0, map_size - 200.0))
-        points.append(Point2D(800.0, map_size - 800.0))
-        #points.append(Point2D(2000.0, map_size - 2000.0))
-        points.append(Point2D(map_size - 600.0, 600.0))
+            points.append(Point2D(500.0, map_size - 200.0))
+        points.append(Point2D(700.0, map_size - 700.0))
+        points.append(Point2D(1000.0, map_size - 1000.0))
+        points.append(Point2D(1300.0, map_size - 1300.0))
+        points.append(Point2D(1600.0, map_size - 1600.0))
+        points.append(Point2D(2000.0, map_size - 2000.0))
+        points.append(Point2D(2300.0, map_size - 2300.0))
+        points.append(Point2D(2600.0, map_size - 2600.0))
+        points.append(Point2D(2900.0, map_size - 2900.0))
+        points.append(Point2D(3200.0, map_size - 3200.0))
+        points.append(Point2D(3500.0, map_size - 3500.0))
         self._waypoints_by_lane[LaneType.MIDDLE] = points
+        self._bonuses_by_lane[LaneType.MIDDLE] = [MyStrategy.LEFT_BONUS_POINT, MyStrategy.RIGHT_BONUS_POINT]
+        self._bonuses_decision_points[LaneType.MIDDLE] = Point2D(2000.0, map_size - 2000.0)
 
         points = []
-        points.append(Point2D(100.0, map_size - 100.0))
-        points.append(Point2D(100.0, map_size - 400.0))
-        points.append(Point2D(200.0, map_size - 800.0))
-        points.append(Point2D(200.0, map_size * 0.75))
-        points.append(Point2D(200.0, map_size * 0.5))
-        points.append(Point2D(200.0, map_size * 0.25))
-        points.append(Point2D(200.0, 200.0))
-        points.append(Point2D(map_size * 0.25, 200.0))
-        points.append(Point2D(map_size * 0.5, 200.0))
-        points.append(Point2D(map_size * 0.75, 200.0))
-        points.append(Point2D(map_size - 200.0, 200.0))
+        points.append(Point2D(100.0, 3600))
+        points.append(Point2D(200.0, 3300))
+        points.append(Point2D(200.0, 3000.0))
+        points.append(Point2D(200.0, 2700.0))
+        points.append(Point2D(200.0, 2400.0))
+        points.append(Point2D(200.0, 2100.0))
+        points.append(Point2D(200.0, 1800.0))
+        points.append(Point2D(200.0, 1500.0))
+        points.append(Point2D(200.0, 1200.0))
+        points.append(Point2D(200.0, 900.0))
+        points.append(Point2D(200.0, 600.0))
+        points.append(Point2D(400.0, 500.0))
+        points.append(Point2D(700.0, 200.0))
+        points.append(Point2D(1000.0, 200.0))
+        points.append(Point2D(1500.0, 200.0))
+        points.append(Point2D(2000.0, 200.0))
+        points.append(Point2D(2500.0, 200.0))
+        points.append(Point2D(3000.0, 200.0))
+        points.append(Point2D(3500.0, 200.0))
         self._waypoints_by_lane[LaneType.TOP] = points
+        self._bonuses_by_lane[LaneType.TOP] = [MyStrategy.LEFT_BONUS_POINT]
+        self._bonuses_decision_points[LaneType.TOP] = Point2D(400.0, 500.0)
 
         points = []
-        points.append(Point2D(100.0, map_size - 100.0))
-        points.append(Point2D(400.0, map_size - 100.0))
-        points.append(Point2D(800.0, map_size - 200.0))
-        points.append(Point2D(map_size * 0.25, map_size - 200.0))
-        points.append(Point2D(map_size * 0.5, map_size - 200.0))
-        points.append(Point2D(map_size * 0.75, map_size - 200.0))
-        points.append(Point2D(map_size - 200.0, map_size - 200.0))
-        points.append(Point2D(map_size - 200.0, map_size * 0.75))
-        points.append(Point2D(map_size - 200.0, map_size * 0.5))
-        points.append(Point2D(map_size - 200.0, map_size * 0.25))
-        points.append(Point2D(map_size - 200.0, 200.0))
+        points.append(Point2D(200.0, 3800.0))
+        points.append(Point2D(500.0, 3800.0))
+        points.append(Point2D(800.0, 3800.0))
+        points.append(Point2D(1100.0, 3800.0))
+        points.append(Point2D(1500.0, 3800.0))
+        points.append(Point2D(2000.0, 3800.0))
+        points.append(Point2D(2500.0, 3800.0))
+        points.append(Point2D(3000.0, 3800.0))
+        points.append(Point2D(3400.0, 3800.0))
+        points.append(Point2D(3600.0, 3600.0))
+        points.append(Point2D(3800.0, 3300.0))
+        points.append(Point2D(3800.0, 3000.0))
+        points.append(Point2D(3800.0, 2700.0))
+        points.append(Point2D(3800.0, 2400.0))
+        points.append(Point2D(3800.0, 200.0))
+        points.append(Point2D(3800.0, 1500.0))
+        points.append(Point2D(3800.0, 1200.0))
+        points.append(Point2D(3800.0, 900.0))
+        points.append(Point2D(3800.0, 700.0))
+        points.append(Point2D(3800.0, 500.0))
         self._waypoints_by_lane[LaneType.BOTTOM] = points
+        self._bonuses_by_lane[LaneType.BOTTOM] = [MyStrategy.RIGHT_BONUS_POINT]
+        self._bonuses_decision_points[LaneType.BOTTOM] = Point2D(3600.0, 3600.0)
 
         self._lane = random.choice(list(LaneType))
-        #self._lane = LaneType.MIDDLE
+        #self._lane = LaneType.BOTTOM
         self._waypoints = self._waypoints_by_lane[self._lane]
+        self._possible_bonuses = self._bonuses_by_lane[self._lane]
+        self._bonus_decision_point = self._bonuses_decision_points[self._lane]
         self._firsttime = False
 
     def _initialize_tick(self, me: Wizard, world: World,
@@ -336,36 +406,58 @@ class MyStrategy:
         self._prev_location = cur_location
         self._prev_location_tick = self._world.tick_index
 
+    # def _next_waypoint(self):
+    #     last_wp = self._waypoints[-1]
+    #    #print(self._waypoints)
+
+    #     for i in range(len(self._waypoints) - 1):
+    #         wp = self._waypoints[i]
+
+    #         if wp.distance_to(Point2D(self._me.x, self._me.y))\
+    #                 <= MyStrategy.WAYPOINT_RADIUS:
+    #             return self._waypoints[i + 1]
+
+    #         if last_wp.distance_to(wp)\
+    #                 < last_wp.distance_to(Point2D(self._me.x, self._me.y)):
+    #             return wp
+    #     return last_wp
+
     def _next_waypoint(self):
-        last_wp = self._waypoints[-1]
-       #print(self._waypoints)
+        min_dist = self._game.map_size
+        min_dist_ind = len(self._waypoints) - 1
+        for i in range(len(self._waypoints)):
+            dist = self._waypoints[i].distance_to(Point2D(self._me.x, self._me.y))
+            if dist < min_dist:
+                min_dist = dist
+                min_dist_ind = i
+        if self._next_wt - min_dist_ind > 1:
+            self._next_wt = min_dist_ind
 
-        for i in range(len(self._waypoints) - 1):
-            wp = self._waypoints[i]
+        dist = self._waypoints[self._next_wt].distance_to(Point2D(self._me.x, self._me.y))
+        if dist < MyStrategy.WAYPOINT_RADIUS:
+            self._next_wt += 1
+        return self._waypoints[self._next_wt]
 
-            if wp.distance_to(Point2D(self._me.x, self._me.y))\
-                    <= MyStrategy.WAYPOINT_RADIUS:
-                return self._waypoints[i + 1]
+    # def _previous_waypoint(self):
+    #     first_wp = self._waypoints[0]
 
-            if last_wp.distance_to(wp)\
-                    < last_wp.distance_to(Point2D(self._me.x, self._me.y)):
-                return wp
-        return last_wp
+    #     for i in range(len(self._waypoints) - 1, 0, -1):
+    #         wp = self._waypoints[i]
+
+    #         if wp.distance_to(Point2D(self._me.x, self._me.y))\
+    #                 <= MyStrategy.WAYPOINT_RADIUS:
+    #             return self._waypoints[i - 1]
+
+    #         if first_wp.distance_to(wp)\
+    #                 < first_wp.distance_to(Point2D(self._me.x, self._me.y)):
+    #             return wp
+    #     return first_wp
 
     def _previous_waypoint(self):
-        first_wp = self._waypoints[0]
-
-        for i in range(len(self._waypoints) - 1, 0, -1):
-            wp = self._waypoints[i]
-
-            if wp.distance_to(Point2D(self._me.x, self._me.y))\
-                    <= MyStrategy.WAYPOINT_RADIUS:
-                return self._waypoints[i - 1]
-
-            if first_wp.distance_to(wp)\
-                    < first_wp.distance_to(Point2D(self._me.x, self._me.y)):
-                return wp
-        return first_wp
+        dist = self._waypoints[self._next_wt - 1].distance_to(Point2D(self._me.x, self._me.y))
+        if dist < MyStrategy.WAYPOINT_RADIUS:
+            self._next_wt -= 1
+        return self._waypoints[self._next_wt - 1]
 
     def _update_last_enemy(self):
         if type(self._last_enemy[0]) is Building:
@@ -406,8 +498,9 @@ class MyStrategy:
             if dist > self._me.cast_range:
                 continue
 
-            if dist < self._me.cast_range * 0.8:
+            if dist < self._me.cast_range * 0.6:
                 #print("fall back!")
+                #print("falling", self._me.cast_range * 0.8)
                 self._is_falling_back = True
 
             priority = unit_priority * MyStrategy.HEALTH_PRIORITY_DEFAULT
@@ -416,10 +509,10 @@ class MyStrategy:
                 priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_50
             if life_factor < 0.25:
                 priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_25
-            prior_units.append((unit, dist, priority))
 
-            if dist < self._game.wizard_radius + unit.radius * 3:
-                priority *= dist * (1 - life_factor)
+            if dist < self._game.wizard_radius + unit.radius * 2:
+                priority *= MyStrategy.CLOSE_ENEMY_PRIORITY
+            prior_units.append((unit, dist, priority))
         return sorted(prior_units, key=lambda x: x[2], reverse=True)
 
     def _get_priority_target(self):
@@ -473,9 +566,18 @@ class MyStrategy:
             self._is_moving = False
             return
 
+        self._is_moving = True
+        angle = self._me.get_angle_to(point.x, point.y)
+
+        if not self._is_attacking and not self._is_escaping_stuck:
+            self._move.turn = angle
+            self._current_strafe = 0
+            self._current_speed = self._game.wizard_forward_speed
+            return
+
         #if not self._is_moving:
         #    print("Moving started")
-        angle = self._me.get_angle_to(point.x, point.y)
+
         speed, strafe = self._calc_move_to_angle(angle)
 
         if not self._is_escaping_stuck:
@@ -484,6 +586,4 @@ class MyStrategy:
                 self._prev_location_tick = self._world.tick_index
             self._current_strafe = strafe
             self._current_speed = speed
-
-        self._is_moving = True
 
