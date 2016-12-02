@@ -38,7 +38,7 @@ class LaneType(Enum):
 
 class MyStrategy:
     WAYPOINT_RADIUS = 100.0
-    LOW_HP_FACTOR = 0.35
+    LOW_HP_FACTOR = 0.4
 
     WIZARD_PRIORITY = 3
     MINION_PRIORITY = 1
@@ -139,8 +139,8 @@ class MyStrategy:
                     self._last_enemy[1] - self._last_enemy[0].radius \
                     + self._game.magic_missile_radius
 
+        self._is_low_hp = False
         if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
-            self._is_low_hp = False
             if self._nearest_range_enemy:
                 #print("nearest", self._nearest_range_enemy[1], self._get_range_unit_attack_dist(self._nearest_range_enemy[0]))
                 if self._nearest_range_enemy[1]\
