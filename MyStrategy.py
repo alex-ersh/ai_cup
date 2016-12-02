@@ -140,13 +140,12 @@ class MyStrategy:
                     + self._game.magic_missile_radius
 
         if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
+            self._is_low_hp = False
             if self._nearest_range_enemy:
                 #print("nearest", self._nearest_range_enemy[1], self._get_range_unit_attack_dist(self._nearest_range_enemy[0]))
                 if self._nearest_range_enemy[1]\
                         <= self._get_range_unit_attack_dist(self._nearest_range_enemy[0]):
                     self._is_low_hp = True
-        else:
-            self._is_low_hp = False
 
         if self._is_low_hp or self._is_falling_back:
             self._go_to_no_turn(self._previous_waypoint(), back=True)
@@ -406,7 +405,7 @@ class MyStrategy:
             if dist > self._me.cast_range:
                 continue
 
-            if dist < self._me.cast_range * 0.8:
+            if dist < self._me.cast_range * 0.6:
                 #print("fall back!")
                 self._is_falling_back = True
 
@@ -416,10 +415,10 @@ class MyStrategy:
                 priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_50
             if life_factor < 0.25:
                 priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_25
-            prior_units.append((unit, dist, priority))
 
-            if dist < self._game.wizard_radius + unit.radius * 3:
-                priority *= dist * (1 - life_factor)
+            if dist < self._game.wizard_radius + unit.radius * 2:
+                priority *= MyStrategy.CLOSE_ENEMY_PRIORITY
+            prior_units.append((unit, dist, priority))
         return sorted(prior_units, key=lambda x: x[2], reverse=True)
 
     def _get_priority_target(self):
@@ -473,9 +472,17 @@ class MyStrategy:
             self._is_moving = False
             return
 
+        self._is_moving = True
+        angle = self._me.get_angle_to(point.x, point.y)
+
+        if not self._is_attacking and not self._is_escaping_stuck:
+            self._move.turn = angle
+            self._current_strafe = 0
+            self._current_speed = self._game.wizard_forward_speed
+            return
+
         #if not self._is_moving:
         #    print("Moving started")
-        angle = self._me.get_angle_to(point.x, point.y)
         speed, strafe = self._calc_move_to_angle(angle)
 
         if not self._is_escaping_stuck:
@@ -484,6 +491,4 @@ class MyStrategy:
                 self._prev_location_tick = self._world.tick_index
             self._current_strafe = strafe
             self._current_speed = speed
-
-        self._is_moving = True
 
