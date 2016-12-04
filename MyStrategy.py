@@ -9,10 +9,14 @@ from model.SkillType import SkillType
 from model.Tree import Tree
 from model.MinionType import MinionType
 from model.Building import Building
+from model.BuildingType import BuildingType
 from model.Minion import Minion
+from model.Unit import Unit
+from model.LivingUnit import LivingUnit
 from enum import Enum
 from math import hypot
 from math import pi
+import math
 import random
 
 class Point2D:
@@ -35,21 +39,57 @@ class LaneType(Enum):
     MIDDLE = 2
     BOTTOM = 3
 
+class UnitInfo:
+    def __init__(self, unit: Unit, distance: float, angle: float):
+        self._unit = unit
+        self._distance = distance
+        self._angle = angle
+
+    unit = property(lambda self: self._unit)
+    distance = property(lambda self: self._distance)
+    angle = property(lambda self: self._angle)
+
+    @unit.setter
+    def unit(self, value):
+        self._unit = value
+
+    @distance.setter
+    def distance(self, value):
+        self._distance = value
+
+    @angle.setter
+    def angle(self, value):
+        self._angle = value
+
+class EnemyInfo():
+    def __init__(self, unit_info: UnitInfo, priority: int):
+        self._unit_info = unit_info
+        self._priority = priority
+
+    unit_info = property(lambda self: self._unit_info)
+    priority = property(lambda self: self._priority)
+
+    @unit_info.setter
+    def unit_info(self, value):
+        self._unit_info = value
+
+    @priority.setter
+    def priority(self, value):
+        self._priority = value
 
 class MyStrategy:
     WAYPOINT_RADIUS = 100.0
     LOW_HP_FACTOR = 0.4
 
+    PRIORITY_ENEMY_PERIOD = 50
+
     WIZARD_PRIORITY = 3
     MINION_PRIORITY = 1
     BULDING_PRIORITY = 2
-
-    MAX_PRIORITY = 100
-
-    CLOSE_ENEMY_PRIORITY = 5
     HEALTH_PRIORITY_DEFAULT = 1
     HEALTH_PRIORITY_BELOW_50 = 2
     HEALTH_PRIORITY_BELOW_25 = 3
+    CLOSE_ENEMY_PRIORITY = 5
 
     def __init__(self):
         self._firsttime = True
@@ -94,67 +134,164 @@ class MyStrategy:
             ]
         self._current_level = 0
 
-    def _get_range_unit_attack_dist(self, unit):
-        if type(unit) is Building:
-            return unit.attack_range
-        elif type(unit) is Wizard:
-            return unit.cast_range
-        elif type(unit) is Minion\
-                and unit.type == MinionType.FETISH_BLOWDART:
-            return self._game.fetish_blowdart_attack_range
+        self._priority_enemy = None
+        self._last_priority_enemy = None
+        self._last_priority_enemy_tick = 0
+        self._turn_angle = 0.0
+        self._enemy_faction = None
+        self._is_in_enemy_range = False
+        self._next_wt = 0
+
+    def _tick_diff(self, prev_tick):
+        return self._world.tick_index - prev_tick
+
+    def _clear_state(self):
+        self._priority_enemy = None
+        self._is_attacking = False
+        self._turn_angle = 0.0
+        self._is_falling_back = False
+        self._is_in_enemy_range = False
+        self._is_low_hp = False
+
+    def _check_in_enemy_range(self, unit_info: UnitInfo):
+        unit = unit_info.unit
+        if unit.faction != self._enemy_faction:
+            return
+
+        t = type(unit)
+        attack_range = 0.0
+        if t is Wizard:
+            attack_range = unit.cast_range
+        elif t is Building:
+            if unit.type == BuildingType.FACTION_BASE:
+                attack_range = self._game.guardian_tower_attack_range
+            else:
+                attack_range = self._game.faction_base_attack_range
+        elif t is Minion and unit.type == MinionType.FETISH_BLOWDART:
+            attack_range = self._game.fetish_blowdart_attack_range
         else:
-            return 0.0
+            return
+
+        if unit_info.distance < attack_range * 1.1:
+            self._is_in_enemy_range = True
+
+    def _update_priority_enemy(self, unit_info: UnitInfo):
+        unit = unit_info.unit
+
+        if unit.faction != self._enemy_faction:
+            return
+
+        if unit_info.distance < self._me.cast_range * 0.6:
+            self._is_falling_back = True
+
+        # Не меняем слишком часто противника, чтобы не вертеться от
+        # одного к другому.
+        if self._last_priority_enemy\
+                and self._tick_diff(self._last_priority_enemy_tick)\
+                < MyStrategy.PRIORITY_ENEMY_PERIOD:
+            if unit.id == self._last_priority_enemy.unit_info.unit.id:
+                self._last_priority_enemy.unit_info.distance = unit_info.distance
+                self._last_priority_enemy.unit_info.angle = unit_info.angle
+                self._priority_enemy = self._last_priority_enemy
+        else:
+            if unit_info.distance > self._me.cast_range:
+                return
+
+            unit_priority = MyStrategy.WIZARD_PRIORITY
+            t = type(unit)
+            if t is Building:
+                unit_priority = MyStrategy.BULDING_PRIORITY
+            elif t is Minion:
+                unit_priority = MyStrategy.MINION_PRIORITY
+
+            priority = unit_priority * MyStrategy.HEALTH_PRIORITY_DEFAULT
+            life_factor = float(unit.life) / unit.max_life
+            if life_factor < 0.5:
+                priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_50
+            if life_factor < 0.25:
+                priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_25
+
+            if unit_info.distance < self._me.radius + unit.radius * 5:
+                #print("close enemy! t:", t )
+                priority *= MyStrategy.CLOSE_ENEMY_PRIORITY * unit_info.distance
+
+            enemy = EnemyInfo(unit_info, priority)
+            if not self._priority_enemy:
+                self._priority_enemy = enemy
+            elif self._priority_enemy.priority < priority:
+                self._priority_enemy = enemy
+
+            self._last_priority_enemy = self._priority_enemy
+            self._last_priority_enemy_tick = self._world.tick_index
+
+    def _update_units(self):
+        all_units = []
+        all_units.extend(self._world.wizards)
+        all_units.extend(self._world.minions)
+        all_units.extend(self._world.buildings)
+        all_units.extend(self._world.trees)
+        all_units.extend(self._world.bonuses)
+
+        for unit in all_units:
+            if unit.id == self._me.id:
+                continue
+            distance = self._me.get_distance_to_unit(unit)
+            angle = self._me.get_angle_to_unit(unit)
+            unit_info = UnitInfo(unit, distance, angle)
+
+            self._update_priority_enemy(unit_info)
+            self._check_in_enemy_range(unit_info)
+
+    def _apply_state(self):
+        self._move.turn = self._turn_angle
+        self._move.speed = self._current_speed
+        self._move.strafe_speed = self._current_strafe
+
+    def _attack(self):
+        if not self._priority_enemy:
+            return
+
+        self._is_attacking = True
+        unit_info = self._priority_enemy.unit_info
+        self._turn_angle = unit_info.angle
+
+        if abs(self._turn_angle) < self._game.staff_sector / 2.0:
+            if self._has_frostbolt\
+                    and self._tick_diff(self._last_frostbolt_tick)\
+                    > self._game.frost_bolt_cooldown_ticks:
+                self._move.action = ActionType.FROST_BOLT
+                self._last_frostbolt_tick = self._world.tick_index
+            else:
+                self._move.action = ActionType.MAGIC_MISSILE
+            self._move.cast_angle = self._turn_angle
+            self._move.min_cast_distance = \
+                unit_info.distance - unit_info.unit.radius \
+                + self._game.magic_missile_radius
 
     def move(self, me: Wizard, world: World, game: Game, move: Move):
         self._initialize_tick(me, world, game, move)
         self._initialize_strategy()
 
+        self._clear_state()
+
+        self._update_units()
+
         self._detect_stuck()
 
-        self._is_attacking = False
-        if self._last_enemy\
-                and (self._world.tick_index - self._enemy_locked_tick) < 50:
-            self._update_last_enemy()
-        else:
-            self._is_falling_back = False
-            unit_prior = self._get_priority_target()
-            self._enemy_locked_tick = self._world.tick_index
-            self._last_enemy = unit_prior
+        self._attack()
 
-        if self._last_enemy:
-            self._is_attacking = True
-            angle = self._me.get_angle_to_unit(self._last_enemy[0])
-            self._move.turn = angle
-
-            if abs(angle) < self._game.staff_sector / 2.0:
-                if self._has_frostbolt\
-                        and (self._world.tick_index - self._last_frostbolt_tick)\
-                        > self._game.frost_bolt_cooldown_ticks:
-                    self._move.action = ActionType.FROST_BOLT
-                    self._last_frostbolt_tick = self._world.tick_index
-                else:
-                    self._move.action = ActionType.MAGIC_MISSILE
-                self._move.cast_angle = angle
-                self._move.min_cast_distance = \
-                    self._last_enemy[1] - self._last_enemy[0].radius \
-                    + self._game.magic_missile_radius
-
-        self._is_low_hp = False
         if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
-            if self._nearest_range_enemy:
-                #print("nearest", self._nearest_range_enemy[1], self._get_range_unit_attack_dist(self._nearest_range_enemy[0]))
-                if self._nearest_range_enemy[1]\
-                        <= self._get_range_unit_attack_dist(self._nearest_range_enemy[0]):
-                    self._is_low_hp = True
+            if self._is_in_enemy_range:
+                self._is_low_hp = True
 
         if self._is_low_hp or self._is_falling_back:
             self._go_to_no_turn(self._previous_waypoint(), back=True)
         else:
             self._go_to_no_turn(self._next_waypoint(), back=False)
 
-        self._move.speed = self._current_speed
-        self._move.strafe_speed = self._current_strafe
         self._level_up()
+
+        self._apply_state()
 
     def _level_up(self):
         if self._me.level > self._current_level\
@@ -169,24 +306,47 @@ class MyStrategy:
             return
 
         random.seed(self._game.random_seed)
+        #random.seed(self._game.random_seed)
         map_size = self._game.map_size
+
+        if self._me.faction == Faction.ACADEMY:
+            self._enemy_faction = Faction.RENEGADES
+        else:
+            self._enemy_faction = Faction.ACADEMY
 
         self._prev_location = Point2D(self._me.x, self._me.y)
         self._prev_location_tick = self._world.tick_index
 
+        # Вычисляет, с какой стороны от центральной диагонали появился игрок.
+        # Считает угол между осью x и игроком, если больше 45 градусов,
+        # то слева и наоборот.
+        def _is_left_side(x, y):
+            v1 = (1, 0)
+            v2 = (x, y)
+            v1v2 = x
+            v2_len = hypot(x, y)
+            angle = math.acos(v1v2 / v2_len)
+            if angle >= 0.785398:
+                return True
+            return False
+
         points = []
-        points.append(Point2D(100.0, map_size - 100.0))
-        if random.random() > 0.5:
+        #points.append(Point2D(100.0, map_size - 100.0))
+        if _is_left_side(self._me.x, self._me.y):
+            points.append(Point2D(150.0, map_size - 300.0))
             points.append(Point2D(200.0, map_size - 600.0))
+            points.append(Point2D(600.0, map_size - 600.0))
         else:
-            points.append(Point2D(600.0, map_size - 200.0))
-        points.append(Point2D(800.0, map_size - 800.0))
-        #points.append(Point2D(2000.0, map_size - 2000.0))
+            points.append(Point2D(400.0, map_size - 150.0))
+            points.append(Point2D(600.0, map_size - 300.0))
+            points.append(Point2D(700.0, map_size - 500.0))
+        points.append(Point2D(1000.0, map_size - 1000.0))
+        points.append(Point2D(2000.0, map_size - 2000.0))
         points.append(Point2D(map_size - 600.0, 600.0))
         self._waypoints_by_lane[LaneType.MIDDLE] = points
 
         points = []
-        points.append(Point2D(100.0, map_size - 100.0))
+        #points.append(Point2D(100.0, map_size - 100.0))
         points.append(Point2D(100.0, map_size - 400.0))
         points.append(Point2D(200.0, map_size - 800.0))
         points.append(Point2D(200.0, map_size * 0.75))
@@ -200,7 +360,7 @@ class MyStrategy:
         self._waypoints_by_lane[LaneType.TOP] = points
 
         points = []
-        points.append(Point2D(100.0, map_size - 100.0))
+        #points.append(Point2D(100.0, map_size - 100.0))
         points.append(Point2D(400.0, map_size - 100.0))
         points.append(Point2D(800.0, map_size - 200.0))
         points.append(Point2D(map_size * 0.25, map_size - 200.0))
@@ -213,8 +373,11 @@ class MyStrategy:
         points.append(Point2D(map_size - 200.0, 200.0))
         self._waypoints_by_lane[LaneType.BOTTOM] = points
 
-        self._lane = random.choice(list(LaneType))
-        #self._lane = LaneType.MIDDLE
+        if _is_left_side(self._me.x, self._me.y):
+            self._lane = random.choice([LaneType.TOP, LaneType.MIDDLE])
+        else:
+            self._lane = random.choice([LaneType.BOTTOM, LaneType.MIDDLE])
+        #self._lane = LaneType.BOTTOM
         self._waypoints = self._waypoints_by_lane[self._lane]
         self._firsttime = False
 
@@ -231,7 +394,7 @@ class MyStrategy:
             #print(type(obs[1]), type(Tree))
             if type(obs[1]) is Tree:
                 #print("destroy tree!!!")
-                self._move.turn = obs[0]
+                self._turn_angle = obs[0]
                 self._is_attacking_tree = True
                 if abs(obs[0]) < self._game.staff_sector / 2.0:
                     if obs[2] <= self._game.staff_range:
@@ -311,7 +474,7 @@ class MyStrategy:
         if not self._is_moving:
             return
 
-        if (self._world.tick_index - self._prev_location_tick) < 20:
+        if self._tick_diff(self._prev_location_tick) < 20:
             return
 
         # print("level", self._me.level)
@@ -335,118 +498,62 @@ class MyStrategy:
         self._prev_location = cur_location
         self._prev_location_tick = self._world.tick_index
 
+    # def _next_waypoint(self):
+    #     last_wp = self._waypoints[-1]
+    #    #print(self._waypoints)
+
+    #     for i in range(len(self._waypoints) - 1):
+    #         wp = self._waypoints[i]
+
+    #         if wp.distance_to(Point2D(self._me.x, self._me.y))\
+    #                 <= MyStrategy.WAYPOINT_RADIUS:
+    #             return self._waypoints[i + 1]
+
+    #         if last_wp.distance_to(wp)\
+    #                 < last_wp.distance_to(Point2D(self._me.x, self._me.y)):
+    #             return wp
+    #     return last_wp
+
     def _next_waypoint(self):
-        last_wp = self._waypoints[-1]
-       #print(self._waypoints)
+        min_dist = self._game.map_size
+        min_dist_ind = len(self._waypoints) - 1
+        for i in range(len(self._waypoints)):
+            dist = self._waypoints[i].distance_to(Point2D(self._me.x, self._me.y))
+            if dist < min_dist:
+                min_dist = dist
+                min_dist_ind = i
+        if self._next_wt - min_dist_ind > 1:
+            self._next_wt = min_dist_ind
 
-        for i in range(len(self._waypoints) - 1):
-            wp = self._waypoints[i]
+        dist = self._waypoints[self._next_wt].distance_to(Point2D(self._me.x, self._me.y))
+        if dist < MyStrategy.WAYPOINT_RADIUS:
+            self._next_wt += 1
 
-            if wp.distance_to(Point2D(self._me.x, self._me.y))\
-                    <= MyStrategy.WAYPOINT_RADIUS:
-                return self._waypoints[i + 1]
+        self._next_wt = self._next_wt % len(self._waypoints)
+        return self._waypoints[self._next_wt]
 
-            if last_wp.distance_to(wp)\
-                    < last_wp.distance_to(Point2D(self._me.x, self._me.y)):
-                return wp
-        return last_wp
+    # def _previous_waypoint(self):
+    #     first_wp = self._waypoints[0]
+
+    #     for i in range(len(self._waypoints) - 1, 0, -1):
+    #         wp = self._waypoints[i]
+
+    #         if wp.distance_to(Point2D(self._me.x, self._me.y))\
+    #                 <= MyStrategy.WAYPOINT_RADIUS:
+    #             return self._waypoints[i - 1]
+
+    #         if first_wp.distance_to(wp)\
+    #                 < first_wp.distance_to(Point2D(self._me.x, self._me.y)):
+    #             return wp
+    #     return first_wp
 
     def _previous_waypoint(self):
-        first_wp = self._waypoints[0]
-
-        for i in range(len(self._waypoints) - 1, 0, -1):
-            wp = self._waypoints[i]
-
-            if wp.distance_to(Point2D(self._me.x, self._me.y))\
-                    <= MyStrategy.WAYPOINT_RADIUS:
-                return self._waypoints[i - 1]
-
-            if first_wp.distance_to(wp)\
-                    < first_wp.distance_to(Point2D(self._me.x, self._me.y)):
-                return wp
-        return first_wp
-
-    def _update_last_enemy(self):
-        if type(self._last_enemy[0]) is Building:
-            return
-
-        if type(self._last_enemy[0]) is Minion:
-            units = self._world.minions
-        else:
-            units = self._world.wizards
-
-        for unit in units:
-            if unit.id == self._last_enemy[0].id:
-                dist = self._me.get_distance_to_unit(unit)
-                self._last_enemy = (unit, dist, self._last_enemy[2])
-                return
-
-    def _arrange_by_priority(self, units):
-        if len(units) == 0:
-            return list()
-
-        unit_priority = MyStrategy.WIZARD_PRIORITY
-        if type(units[0]) is Building:
-            unit_priority = MyStrategy.BULDING_PRIORITY
-        elif type(units[0]) is Minion:
-            unit_priority = MyStrategy.MINION_PRIORITY
-
-        prior_units = list()
-        for unit in units:
-            if unit.faction == Faction.NEUTRAL\
-                    or unit.faction == self._me.faction:
-                continue
-
-            dist = self._me.get_distance_to_unit(unit)
-
-            if dist < self._nearest_range_enemy[1]:
-                self._nearest_range_enemy = (unit, dist, 0)
-
-            if dist > self._me.cast_range:
-                continue
-
-            if dist < self._me.cast_range * 0.6:
-                #print("fall back!")
-                self._is_falling_back = True
-
-            priority = unit_priority * MyStrategy.HEALTH_PRIORITY_DEFAULT
-            life_factor = float(unit.life) / unit.max_life
-            if life_factor < 0.5:
-                priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_50
-            if life_factor < 0.25:
-                priority = unit_priority * MyStrategy.HEALTH_PRIORITY_BELOW_25
-
-            if dist < self._game.wizard_radius + unit.radius * 2:
-                priority *= MyStrategy.CLOSE_ENEMY_PRIORITY
-            prior_units.append((unit, dist, priority))
-        return sorted(prior_units, key=lambda x: x[2], reverse=True)
-
-    def _get_priority_target(self):
-        self._nearest_range_enemy = (None, self._game.map_size, 0)
-        prior_buildings = self._arrange_by_priority(self._world.buildings)
-        prior_wizards = self._arrange_by_priority(self._world.wizards)
-        prior_minions = self._arrange_by_priority(self._world.minions)
-
-        max_prior = list()
-        unit_prior = None
-        if prior_buildings:
-            max_prior.append(prior_buildings[0])
-        if prior_wizards:
-            max_prior.append(prior_wizards[0])
-        if prior_minions:
-            max_prior.append(prior_minions[0])
-
-        if max_prior:
-            unit_prior = max(max_prior, key=lambda x: x[2])
-        return unit_prior
-
-    # def _go_to(self, point: Point2D):
-    #     self._is_moving = True
-    #     angle = self._me.get_angle_to(point.x, point.y)
-    #     self._move.turn = angle
-    #
-    #     if abs(angle) < self._game.staff_sector / 4.0:
-    #         self._move.speed = self._game.wizard_forward_speed
+        dist = self._waypoints[self._next_wt - 1].distance_to(Point2D(self._me.x, self._me.y))
+        if dist < MyStrategy.WAYPOINT_RADIUS:
+            self._next_wt -= 1
+        if self._next_wt <= 0:
+            self._next_wt = 1
+        return self._waypoints[self._next_wt - 1]
 
     def _calc_move_to_angle(self, angle):
         if 0.0 >= angle > (-pi / 2):
@@ -476,7 +583,7 @@ class MyStrategy:
         angle = self._me.get_angle_to(point.x, point.y)
 
         if not self._is_attacking and not self._is_escaping_stuck:
-            self._move.turn = angle
+            self._turn_angle = angle
             self._current_strafe = 0
             self._current_speed = self._game.wizard_forward_speed
             return
