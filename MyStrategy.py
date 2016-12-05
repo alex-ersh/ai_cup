@@ -91,6 +91,10 @@ class MyStrategy:
     HEALTH_PRIORITY_BELOW_25 = 3
     CLOSE_ENEMY_PRIORITY = 5
 
+    LEFT_BONUS_POINT = Point2D(1200, 1200)
+    RIGHT_BONUS_POINT = Point2D(2800, 2800)
+    BONUS_TICK_PERIOD = 2500
+
     def __init__(self):
         self._firsttime = True
         self._waypoints_by_lane = {}
@@ -142,6 +146,17 @@ class MyStrategy:
         self._is_in_enemy_range = False
         self._next_wt = 0
 
+        # бонус
+        self._possible_bonuses = []
+        self._current_bonus_point = None
+        self._bonus_decision_point = None
+        self._is_taking_bonus = False
+        self._is_waiting_for_bonus = False
+        self._next_bonus_tick = 0
+        self._visible_bonuses = []
+        self._bonuses_by_lane = {}
+        self._bonuses_decision_points = {}
+
     def _tick_diff(self, prev_tick):
         return self._world.tick_index - prev_tick
 
@@ -152,6 +167,10 @@ class MyStrategy:
         self._is_falling_back = False
         self._is_in_enemy_range = False
         self._is_low_hp = False
+
+        self._turn_angle = 0.0
+        self._current_speed = 0
+        self._current_strafe = 0
 
     def _check_in_enemy_range(self, unit_info: UnitInfo):
         unit = unit_info.unit
@@ -242,6 +261,33 @@ class MyStrategy:
             self._update_priority_enemy(unit_info)
             self._check_in_enemy_range(unit_info)
 
+    def _take_bonus(self):
+        self._is_waiting_for_bonus = False
+        if self._is_taking_bonus:
+            dist = self._me.get_distance_to(self._current_bonus_point.x,
+                                            self._current_bonus_point.y)
+
+            if dist < 50.0 and self._world.tick_index < self._next_bonus_tick:
+                 self._is_waiting_for_bonus = True
+
+            if dist < self._me.radius:
+                if self._is_taking_bonus:
+                    print("stop taking bonus!", dist)
+                self._is_taking_bonus = False
+
+        self._current_bonus_point = random.choice(self._possible_bonuses)
+        dist = self._me.get_distance_to(self._bonus_decision_point.x,
+                                        self._bonus_decision_point.y)
+        to_bonus = self._world.tick_index % MyStrategy.BONUS_TICK_PERIOD
+        #is_it_time = to_bonus > 2000
+        is_it_time = True
+        if dist < 400.0 and is_it_time:
+            self._next_bonus_tick = (self._world.tick_index / int(MyStrategy.BONUS_TICK_PERIOD) + 1) * MyStrategy.BONUS_TICK_PERIOD
+            if not self._is_taking_bonus:
+                print("taking bonus!", dist, self._world.tick_index, self._next_bonus_tick)
+            self._is_taking_bonus = True
+
+
     def _apply_state(self):
         self._move.turn = self._turn_angle
         self._move.speed = self._current_speed
@@ -278,15 +324,23 @@ class MyStrategy:
 
         self._detect_stuck()
 
+        self._take_bonus()
+
         self._attack()
 
         if self._me.life < self._me.max_life * MyStrategy.LOW_HP_FACTOR:
             if self._is_in_enemy_range:
                 self._is_low_hp = True
 
-        if self._is_low_hp or self._is_falling_back:
+        if self._is_taking_bonus and not self._is_low_hp:
+           if not self._is_waiting_for_bonus:
+               print("bonus move!")
+               self._go_to_no_turn(self._current_bonus_point, back=False)
+        elif self._is_low_hp or self._is_falling_back:
+            print("prev!")
             self._go_to_no_turn(self._previous_waypoint(), back=True)
         else:
+            print("next!")
             self._go_to_no_turn(self._next_waypoint(), back=False)
 
         self._level_up()
@@ -344,6 +398,11 @@ class MyStrategy:
         points.append(Point2D(2000.0, map_size - 2000.0))
         points.append(Point2D(map_size - 600.0, 600.0))
         self._waypoints_by_lane[LaneType.MIDDLE] = points
+        self._bonuses_by_lane[LaneType.MIDDLE] = [
+            MyStrategy.LEFT_BONUS_POINT,
+            MyStrategy.RIGHT_BONUS_POINT
+        ]
+        self._bonuses_decision_points[LaneType.MIDDLE] = Point2D(2000.0, 2000.0)
 
         points = []
         #points.append(Point2D(100.0, map_size - 100.0))
@@ -358,6 +417,8 @@ class MyStrategy:
         points.append(Point2D(map_size * 0.75, 200.0))
         points.append(Point2D(map_size - 200.0, 200.0))
         self._waypoints_by_lane[LaneType.TOP] = points
+        self._bonuses_by_lane[LaneType.TOP] = [MyStrategy.LEFT_BONUS_POINT]
+        self._bonuses_decision_points[LaneType.TOP] = Point2D(400.0, 500.0)
 
         points = []
         #points.append(Point2D(100.0, map_size - 100.0))
@@ -372,13 +433,17 @@ class MyStrategy:
         points.append(Point2D(map_size - 200.0, map_size * 0.25))
         points.append(Point2D(map_size - 200.0, 200.0))
         self._waypoints_by_lane[LaneType.BOTTOM] = points
+        self._bonuses_by_lane[LaneType.BOTTOM] = [MyStrategy.RIGHT_BONUS_POINT]
+        self._bonuses_decision_points[LaneType.BOTTOM] = Point2D(3600.0, 3600.0)
 
         if _is_left_side(self._me.x, self._me.y):
             self._lane = random.choice([LaneType.TOP, LaneType.MIDDLE])
         else:
             self._lane = random.choice([LaneType.BOTTOM, LaneType.MIDDLE])
-        #self._lane = LaneType.BOTTOM
+        self._lane = LaneType.MIDDLE
         self._waypoints = self._waypoints_by_lane[self._lane]
+        self._possible_bonuses = self._bonuses_by_lane[self._lane]
+        self._bonus_decision_point = self._bonuses_decision_points[self._lane]
         self._firsttime = False
 
     def _initialize_tick(self, me: Wizard, world: World,
