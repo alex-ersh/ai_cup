@@ -485,13 +485,13 @@ class MyStrategy:
         if not self._is_moving:
             return
 
-        if self._tick_diff(self._prev_location_tick) < 20:
+        if self._tick_diff(self._prev_location_tick) < 3:
             return
 
         # print("level", self._me.level)
         # print("xp", self._me.xp)
 
-        if cur_location.distance_to(self._prev_location) < 30:
+        if cur_location.distance_to(self._prev_location) < 1:
             #print("Escaping!!!")
             #if not self._is_escaping_stuck:
                 #print("Escaping!")
