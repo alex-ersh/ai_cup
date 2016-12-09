@@ -343,7 +343,7 @@ class MyStrategy:
 
         points = []
         #points.append(Point2D(100.0, map_size - 100.0))
-        if _is_left_side(self._me.x, self._me.y):
+        if _is_left_side(self._me.x, map_size - self._me.y):
             points.append(Point2D(150.0, map_size - 300.0))
             points.append(Point2D(200.0, map_size - 600.0))
             points.append(Point2D(600.0, map_size - 600.0))
@@ -384,7 +384,7 @@ class MyStrategy:
         points.append(Point2D(map_size - 200.0, 200.0))
         self._waypoints_by_lane[LaneType.BOTTOM] = points
 
-        if _is_left_side(self._me.x, self._me.y):
+        if _is_left_side(self._me.x, map_size - self._me.y):
             self._lane = random.choice([LaneType.TOP, LaneType.MIDDLE])
         else:
             self._lane = random.choice([LaneType.BOTTOM, LaneType.MIDDLE])
