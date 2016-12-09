@@ -161,15 +161,15 @@ class MyStrategy:
             attack_range = unit.cast_range
         elif t is Building:
             if unit.type == BuildingType.FACTION_BASE:
-                attack_range = self._game.guardian_tower_attack_range
-            else:
                 attack_range = self._game.faction_base_attack_range
+            else:
+                attack_range = self._game.guardian_tower_attack_range
         elif t is Minion and unit.type == MinionType.FETISH_BLOWDART:
             attack_range = self._game.fetish_blowdart_attack_range
         else:
             return
 
-        if unit_info.distance < attack_range * 1.1:
+        if unit_info.distance < attack_range * 1.3:
             self._is_in_enemy_range = True
 
     def _is_range_unit(self, unit):
@@ -191,9 +191,9 @@ class MyStrategy:
             return
 
         if self._is_range_unit(unit)\
-                and unit_info.distance < self._me.cast_range * 0.6:
+                and unit_info.distance < self._me.cast_range * 0.7:
             self._is_falling_back = True
-        elif unit_info.distance < self._me.cast_range * 0.2:
+        elif unit_info.distance < self._me.cast_range * 0.4:
             self._is_falling_back = True
 
         if unit_info.distance > self._me.cast_range:
