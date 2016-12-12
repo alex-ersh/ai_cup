@@ -79,7 +79,7 @@ class EnemyInfo():
 
 class MyStrategy:
     WAYPOINT_RADIUS = 100.0
-    LOW_HP_FACTOR = 0.4
+    LOW_HP_FACTOR = 0.5
 
     WIZARD_PRIORITY = 3.0
     MINION_PRIORITY = 1.5
@@ -138,6 +138,10 @@ class MyStrategy:
         self._enemy_faction = None
         self._is_in_enemy_range = False
         self._next_wt = 0
+        self._is_moving_out_of_stuck = False
+        self._moving_out_of_stuck_tick = 0
+        self._moving_out_speed = 0
+        self._moving_out_strafe = 0
 
     def _tick_diff(self, prev_tick):
         return self._world.tick_index - prev_tick
@@ -343,14 +347,15 @@ class MyStrategy:
 
         points = []
         #points.append(Point2D(100.0, map_size - 100.0))
-        if _is_left_side(self._me.x, map_size - self._me.y):
-            points.append(Point2D(150.0, map_size - 300.0))
-            points.append(Point2D(200.0, map_size - 600.0))
-            points.append(Point2D(600.0, map_size - 600.0))
-        else:
-            points.append(Point2D(400.0, map_size - 150.0))
-            points.append(Point2D(600.0, map_size - 300.0))
-            points.append(Point2D(700.0, map_size - 500.0))
+        # if _is_left_side(self._me.x, map_size - self._me.y):
+        #     points.append(Point2D(150.0, map_size - 300.0))
+        #     points.append(Point2D(200.0, map_size - 600.0))
+        #     points.append(Point2D(600.0, map_size - 600.0))
+        # else:
+        #     points.append(Point2D(400.0, map_size - 150.0))
+        #     points.append(Point2D(600.0, map_size - 300.0))
+        #     points.append(Point2D(700.0, map_size - 500.0))
+        points.append(Point2D(1000.0, map_size - 700.0))
         points.append(Point2D(1000.0, map_size - 1000.0))
         points.append(Point2D(2000.0, map_size - 2000.0))
         points.append(Point2D(map_size - 600.0, 600.0))
@@ -388,7 +393,7 @@ class MyStrategy:
             self._lane = random.choice([LaneType.TOP, LaneType.MIDDLE])
         else:
             self._lane = random.choice([LaneType.BOTTOM, LaneType.MIDDLE])
-        #self._lane = LaneType.BOTTOM
+        self._lane = LaneType.MIDDLE
         self._waypoints = self._waypoints_by_lane[self._lane]
         self._firsttime = False
 
@@ -447,6 +452,7 @@ class MyStrategy:
         if obs_num == 1:
             side = random.choice([-pi / 2, pi / 2])
             move_angle = obstacles[0][0] + side
+            print("side obs_ang move_ang", side, obstacles[0][0], move_angle)
             if abs(move_angle) > pi:
                 if move_angle <= 0.0:
                     move_angle = 2 * pi + move_angle
@@ -485,27 +491,37 @@ class MyStrategy:
         if not self._is_moving:
             return
 
-        if self._tick_diff(self._prev_location_tick) < 20:
+        if self._tick_diff(self._prev_location_tick) < 3:
             return
 
         # print("level", self._me.level)
         # print("xp", self._me.xp)
 
-        if cur_location.distance_to(self._prev_location) < 30:
+        if cur_location.distance_to(self._prev_location) < 1:
             #print("Escaping!!!")
             #if not self._is_escaping_stuck:
                 #print("Escaping!")
             self._is_escaping_stuck = True
             self._calculate_escape_point()
             self._prev_location_tick = self._world.tick_index
+            self._is_moving_out_of_stuck = True
+            self._moving_out_of_stuck_tick = self._world.tick_index
+            self._moving_out_speed = self._current_speed
+            self._moving_out_strafe = self._current_strafe
             return
 
+        if self._is_moving_out_of_stuck\
+                and self._tick_diff(self._moving_out_of_stuck_tick) < 50:
+            self._current_speed = self._moving_out_speed
+            self._current_strafe = self._moving_out_strafe
+        else:
+            self._is_escaping_stuck = False
+            self._current_strafe = 0
+            self._current_speed = 0
         #print("Stop escaping!!!")
         #if self._is_escaping_stuck:
             #print("Stop Escaping!")
-        self._is_escaping_stuck = False
-        self._current_strafe = 0
-        self._current_speed = 0
+
         self._prev_location = cur_location
         self._prev_location_tick = self._world.tick_index
 
